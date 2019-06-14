@@ -168,10 +168,15 @@ func (s *systemd) Install() error {
 		return err
 	}
 
-	err = run("systemctl", "enable", s.Name+".service")
+	enableCmd := "enable"
+	if !s.Option.bool(optionEnabled, optionEnabledDefault) {
+		enableCmd = "disable"
+	}
+	err = run("systemctl", enableCmd, s.Name+".service")
 	if err != nil {
 		return err
 	}
+
 	return run("systemctl", "daemon-reload")
 }
 

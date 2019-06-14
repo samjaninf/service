@@ -77,6 +77,8 @@ const (
 	optionSessionCreateDefault = false
 	optionLogOutput            = "LogOutput"
 	optionLogOutputDefault     = false
+	optionEnabled              = "Enabled"
+	optionEnabledDefault       = true
 
 	optionRunWait      = "RunWait"
 	optionReloadSignal = "ReloadSignal"
@@ -145,6 +147,8 @@ type Config struct {
 	//    - Restart       string (always)           - How shall service be restarted.
 	//    - SuccessExitStatus string ()             - The list of exit status that shall be considered as successful,
 	//                                                in addition to the default ones.
+	//  * SysV and Systemd only
+	//    - Enabled       bool   (true) - Enable service just after installation.
 	Option KeyValue
 }
 
