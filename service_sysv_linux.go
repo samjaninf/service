@@ -5,11 +5,9 @@
 package service
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -87,13 +85,11 @@ func (s *sysv) Install() error {
 
 	var to = &struct {
 		*Config
-		Path string
-		IsBusyBox bool
+		Path         string
 		LogDirectory string
 	}{
 		s.Config,
 		path,
-		isRunningBusyBox(),
 		s.Option.string(optionLogDirectory, defaultLogDirectory),
 	}
 
@@ -105,22 +101,14 @@ func (s *sysv) Install() error {
 	if err = os.Chmod(confPath, 0755); err != nil {
 		return err
 	}
-
-	enableService := s.Option.bool(optionEnabled, optionEnabledDefault)
 	for _, i := range [...]string{"2", "3", "4", "5"} {
-		linkPath := "/etc/rc"+i+".d/S50"+s.Name
-		if enableService {
-			_ = os.Symlink(confPath, linkPath)
-		} else {
-			_ = os.Remove(linkPath)
+		if err = os.Symlink(confPath, "/etc/rc"+i+".d/S50"+s.Name); err != nil {
+			continue
 		}
 	}
 	for _, i := range [...]string{"0", "1", "6"} {
-		linkPath := "/etc/rc"+i+".d/K02"+s.Name
-		if enableService {
-			_ = os.Symlink(confPath, linkPath)
-		} else {
-			_ = os.Remove(linkPath)
+		if err = os.Symlink(confPath, "/etc/rc"+i+".d/K02"+s.Name); err != nil {
+			continue
 		}
 	}
 
@@ -164,7 +152,7 @@ func (s *sysv) Run() (err error) {
 }
 
 func (s *sysv) Status() (Status, error) {
-	_, out, err := runServiceCommand(s.Name, "status", true)
+	_, out, err := runWithOutput("service", s.Name, "status")
 	if err != nil {
 		return StatusUnknown, err
 	}
@@ -180,13 +168,11 @@ func (s *sysv) Status() (Status, error) {
 }
 
 func (s *sysv) Start() error {
-	_, _, err := runServiceCommand(s.Name, "start", false)
-	return err
+	return run("service", s.Name, "start")
 }
 
 func (s *sysv) Stop() error {
-	_, _, err := runServiceCommand(s.Name, "stop", false)
-	return err
+	return run("service", s.Name, "stop")
 }
 
 func (s *sysv) Restart() error {
@@ -196,34 +182,6 @@ func (s *sysv) Restart() error {
 	}
 	time.Sleep(50 * time.Millisecond)
 	return s.Start()
-}
-
-func runServiceCommand(serviceName, operation string, readStdOut bool) (int, string, error) {
-	retCode, out, err := runCommand("service", readStdOut, serviceName, operation)
-	if err != nil && strings.Contains(err.Error(), "\"service\": executable file not found in $PATH") {
-		// Some systems like OpenWRT do not have 'service' command,
-		// it's only a shell function (which can not be called from here).
-		// Let's try to call init.d script directly:
-		initRetCode, initOut, initErr := runCommand("/etc/init.d/" + serviceName, readStdOut, operation)
-		if initErr == nil {
-			return initRetCode, initOut, nil
-		}
-	}
-	return retCode, out, err
-}
-
-func isRunningBusyBox() bool {
-	// try to invoke 'ps' command with parameters that are not supported by busybox
-	var errb bytes.Buffer
-	cmd := exec.Command("ps", "xaw")
-	cmd.Stderr = &errb
-
-	_ = cmd.Run()
-	stderr := errb.String()
-	if strings.Contains(stderr, "unrecognized option") && strings.Contains(stderr, "BusyBox") {
-		return true
-	}
-	return false
 }
 
 const sysvScript = `#!/bin/sh
@@ -254,15 +212,6 @@ stderr_log="{{.LogDirectory}}/$name.err"
 get_pid() {
     cat "$pid_file"
 }
-{{if .IsBusyBox}}
-	is_running() {
-		[ -f "$pid_file" ] && ps | awk '{print "s" $1 "s"}' | grep "s$(get_pid)s" > /dev/null 2>&1
-	}
-{{else}}
-	is_running() {
-		[ -f "$pid_file" ] && ps $(get_pid) > /dev/null 2>&1
-	}
-{{end}}
 
 is_running() {
     [ -f "$pid_file" ] && cat /proc/$(get_pid)/stat > /dev/null 2>&1
