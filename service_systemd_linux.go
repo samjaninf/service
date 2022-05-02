@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -66,20 +67,30 @@ func (s *systemd) Platform() string {
 	return s.platform
 }
 
-// Systemd services should be supported, but are not currently.
-var errNoUserServiceSystemd = errors.New("User services are not supported on systemd.")
-
 func (s *systemd) configPath() (cp string, err error) {
-	if s.Option.bool(optionUserService, optionUserServiceDefault) {
-		err = errNoUserServiceSystemd
+	if !s.isUserService() {
+		cp = "/etc/systemd/system/" + s.unitName()
 		return
 	}
-	cp = "/etc/systemd/system/" + s.Config.Name + ".service"
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	systemdUserDir := filepath.Join(homeDir, ".config/systemd/user")
+	err = os.MkdirAll(systemdUserDir, os.ModePerm)
+	if err != nil {
+		return
+	}
+	cp = filepath.Join(systemdUserDir, s.unitName())
 	return
 }
 
+func (s *systemd) unitName() string {
+	return s.Config.Name + ".service"
+}
+
 func (s *systemd) getSystemdVersion() int64 {
-	_, out, err := runWithOutput("systemctl", "--version")
+	_, out, err := s.runWithOutput("systemctl", "--version")
 	if err != nil {
 		return -1
 	}
@@ -117,9 +128,12 @@ func (s *systemd) template() *template.Template {
 
 	if customScript != "" {
 		return template.Must(template.New("").Funcs(tf).Parse(customScript))
-	} else {
-		return template.Must(template.New("").Funcs(tf).Parse(systemdScript))
 	}
+	return template.Must(template.New("").Funcs(tf).Parse(systemdScript))
+}
+
+func (s *systemd) isUserService() bool {
+	return s.Option.bool(optionUserService, optionUserServiceDefault)
 }
 
 func (s *systemd) Install() error {
@@ -132,7 +146,7 @@ func (s *systemd) Install() error {
 		return fmt.Errorf("Init already exists: %s", confPath)
 	}
 
-	f, err := os.Create(confPath)
+	f, err := os.OpenFile(confPath, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return err
 	}
@@ -149,18 +163,22 @@ func (s *systemd) Install() error {
 		HasOutputFileSupport bool
 		ReloadSignal         string
 		PIDFile              string
+		LimitNOFILE          int
 		Restart              string
 		SuccessExitStatus    string
 		LogOutput            bool
+		LogDirectory         string
 	}{
 		s.Config,
 		path,
 		s.hasOutputFileSupport(),
 		s.Option.string(optionReloadSignal, ""),
 		s.Option.string(optionPIDFile, ""),
+		s.Option.int(optionLimitNOFILE, optionLimitNOFILEDefault),
 		s.Option.string(optionRestart, "always"),
 		s.Option.string(optionSuccessExitStatus, ""),
 		s.Option.bool(optionLogOutput, optionLogOutputDefault),
+		s.Option.string(optionLogDirectory, defaultLogDirectory),
 	}
 
 	err = s.template().Execute(f, to)
@@ -168,20 +186,16 @@ func (s *systemd) Install() error {
 		return err
 	}
 
-	enableCmd := "enable"
-	if !s.Option.bool(optionEnabled, optionEnabledDefault) {
-		enableCmd = "disable"
-	}
-	err = run("systemctl", enableCmd, s.Name+".service")
+	err = s.runAction("enable")
 	if err != nil {
 		return err
 	}
 
-	return run("systemctl", "daemon-reload")
+	return s.run("daemon-reload")
 }
 
 func (s *systemd) Uninstall() error {
-	err := run("systemctl", "disable", s.Name+".service")
+	err := s.runAction("disable")
 	if err != nil {
 		return err
 	}
@@ -221,60 +235,63 @@ func (s *systemd) Run() (err error) {
 }
 
 func (s *systemd) Status() (Status, error) {
-	exitCode, _, _ := runWithOutput("systemctl", "is-failed", s.Name)
-	if exitCode == 0 {
-		return StatusUnknown, errors.New("service in failed state")
-	}
-
-	// fallback to other means of identifying state:
-	exitCode, out, err := runWithOutput("systemctl", "show", "--property=LoadState,ActiveState", s.Name)
-	if err != nil {
+	exitCode, out, err := s.runWithOutput("systemctl", "is-active", s.unitName())
+	if exitCode == 0 && err != nil {
 		return StatusUnknown, err
 	}
 
-	outputLines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(outputLines) != 2 {
-		return StatusUnknown, fmt.Errorf("unexpected output from 'systemctl show' command: %s", out)
-	}
-
-	loadStateLine := strings.Split(outputLines[0], "=")
-	if len(loadStateLine) != 2 {
-		return StatusUnknown, fmt.Errorf("unexpected output from 'systemctl show' command: %s", loadStateLine)
-	}
-
-	if strings.HasPrefix(loadStateLine[1], "not-found") {
-		return StatusUnknown, ErrNotInstalled
-	}
-
-	activeStateLine := strings.Split(outputLines[1], "=")
-	if len(activeStateLine) != 2 {
-		return StatusUnknown, fmt.Errorf("unexpected output from 'systemctl show' command: %s", activeStateLine)
-	}
-
-	return resolveStatusFromSystemctlOutput(activeStateLine[1])
-}
-
-func resolveStatusFromSystemctlOutput(out string) (Status, error) {
 	switch {
 	case strings.HasPrefix(out, "active"):
 		return StatusRunning, nil
 	case strings.HasPrefix(out, "inactive"):
-		return StatusStopped, nil
+		// inactive can also mean its not installed, check unit files
+		exitCode, out, err := s.runWithOutput("systemctl", "list-unit-files", "-t", "service", s.unitName())
+		if exitCode == 0 && err != nil {
+			return StatusUnknown, err
+		}
+		if strings.Contains(out, s.Name) {
+			// unit file exists, installed but not running
+			return StatusStopped, nil
+		}
+		// no unit file
+		return StatusUnknown, ErrNotInstalled
+	case strings.HasPrefix(out, "activating"):
+		return StatusRunning, nil
+	case strings.HasPrefix(out, "failed"):
+		return StatusUnknown, errors.New("service in failed state")
 	default:
 		return StatusUnknown, ErrNotInstalled
 	}
 }
 
 func (s *systemd) Start() error {
-	return run("systemctl", "start", s.Name+".service")
+	return s.runAction("start")
 }
 
 func (s *systemd) Stop() error {
-	return run("systemctl", "stop", s.Name+".service")
+	return s.runAction("stop")
 }
 
 func (s *systemd) Restart() error {
-	return run("systemctl", "restart", s.Name+".service")
+	return s.runAction("restart")
+}
+
+func (s *systemd) runWithOutput(command string, arguments ...string) (int, string, error) {
+	if s.isUserService() {
+		arguments = append(arguments, "--user")
+	}
+	return runWithOutput(command, arguments...)
+}
+
+func (s *systemd) run(action string, args ...string) error {
+	if s.isUserService() {
+		return run("systemctl", append([]string{action, "--user"}, args...)...)
+	}
+	return run("systemctl", append([]string{action}, args...)...)
+}
+
+func (s *systemd) runAction(action string) error {
+	return s.run(action, s.unitName())
 }
 
 const systemdScript = `[Unit]
@@ -293,13 +310,18 @@ ExecStart={{.Path|cmdEscape}}{{range .Arguments}} {{.|cmd}}{{end}}
 {{if .ReloadSignal}}ExecReload=/bin/kill -{{.ReloadSignal}} "$MAINPID"{{end}}
 {{if .PIDFile}}PIDFile={{.PIDFile|cmd}}{{end}}
 {{if and .LogOutput .HasOutputFileSupport -}}
-StandardOutput=file:/var/log/{{.Name}}.out
-StandardError=file:/var/log/{{.Name}}.err
+StandardOutput=file:{{.LogDirectory}}/{{.Name}}.out
+StandardError=file:{{.LogDirectory}}/{{.Name}}.err
 {{- end}}
+{{if gt .LimitNOFILE -1 }}LimitNOFILE={{.LimitNOFILE}}{{end}}
 {{if .Restart}}Restart={{.Restart}}{{end}}
 {{if .SuccessExitStatus}}SuccessExitStatus={{.SuccessExitStatus}}{{end}}
 RestartSec=120
 EnvironmentFile=-/etc/sysconfig/{{.Name}}
+
+{{range $k, $v := .EnvVars -}}
+Environment={{$k}}={{$v}}
+{{end -}}
 
 [Install]
 WantedBy=multi-user.target
