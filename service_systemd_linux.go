@@ -164,6 +164,7 @@ func (s *systemd) Install() error {
 		ReloadSignal         string
 		PIDFile              string
 		LimitNOFILE          int
+		AmbientCapabilities  string
 		Restart              string
 		SuccessExitStatus    string
 		LogOutput            bool
@@ -175,6 +176,7 @@ func (s *systemd) Install() error {
 		s.Option.string(optionReloadSignal, ""),
 		s.Option.string(optionPIDFile, ""),
 		s.Option.int(optionLimitNOFILE, optionLimitNOFILEDefault),
+		s.Option.string(optionAmbientCapabilities, ""),
 		s.Option.string(optionRestart, "always"),
 		s.Option.string(optionSuccessExitStatus, ""),
 		s.Option.bool(optionLogOutput, optionLogOutputDefault),
@@ -314,6 +316,7 @@ StandardOutput=file:{{.LogDirectory}}/{{.Name}}.out
 StandardError=file:{{.LogDirectory}}/{{.Name}}.err
 {{- end}}
 {{if gt .LimitNOFILE -1 }}LimitNOFILE={{.LimitNOFILE}}{{end}}
+{{if .AmbientCapabilities}}AmbientCapabilities={{.AmbientCapabilities}}{{end}}
 {{if .Restart}}Restart={{.Restart}}{{end}}
 {{if .SuccessExitStatus}}SuccessExitStatus={{.SuccessExitStatus}}{{end}}
 RestartSec=120

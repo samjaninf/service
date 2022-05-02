@@ -80,12 +80,13 @@ const (
 	optionPrefix               = "Prefix"
 	optionPrefixDefault        = "application"
 
-	optionRunWait            = "RunWait"
-	optionReloadSignal       = "ReloadSignal"
-	optionPIDFile            = "PIDFile"
-	optionLimitNOFILE        = "LimitNOFILE"
-	optionLimitNOFILEDefault = -1 // -1 = don't set in configuration
-	optionRestart            = "Restart"
+	optionRunWait             = "RunWait"
+	optionReloadSignal        = "ReloadSignal"
+	optionPIDFile             = "PIDFile"
+	optionLimitNOFILE         = "LimitNOFILE"
+	optionAmbientCapabilities = "AmbientCapabilities"
+	optionLimitNOFILEDefault  = -1 // -1 = don't set in configuration
+	optionRestart             = "Restart"
 
 	optionSuccessExitStatus = "SuccessExitStatus"
 
